@@ -1,5 +1,5 @@
 <script setup>
-import { ref, nextTick, onMounted, watch } from 'vue';
+import { ref, onMounted, watch } from 'vue';
 import { LMap, LTileLayer, LMarker } from '@vue-leaflet/vue-leaflet';
 import "leaflet/dist/leaflet.css";
 import { Geolocation } from "@capacitor/geolocation";
@@ -7,15 +7,16 @@ import { Preferences } from "@capacitor/preferences";
 import L from 'leaflet';
 
 const zoom = ref(13);
-const center = ref([48.0610, 8.5346]);
+const center = ref([51.505, -0.09]);
 const showLoading = ref(false);
 const userPosition = ref(null);
 const searchQuery = ref('');
 const searchPosition = ref(null);
+const mapRef = ref(null);
 
 // Marker-Icons
 const userIcon = new L.Icon({
-  iconUrl: '/user-marker.png', // Ersetze mit Pfad zu deiner Bilddatei
+  iconUrl: '/user-marker.png',
   iconSize: [25, 41],
   iconAnchor: [12, 41],
   shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
@@ -23,33 +24,39 @@ const userIcon = new L.Icon({
 });
 
 const searchIcon = new L.Icon({
-  iconUrl: '/search-marker.png', // Ersetze mit Pfad zu deiner Bilddatei
+  iconUrl: '/search-marker.png',
   iconSize: [25, 41],
   iconAnchor: [12, 41],
   shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
   shadowSize: [41, 41],
 });
 
-// Persistierte Karte laden
+// Karte Zustand speichern, wenn sich center oder zoom ändern
+watch(
+  [center, zoom],
+  async ([newCenter, newZoom]) => {
+    await Preferences.set({
+      key: 'mapState',
+      value: JSON.stringify({ center: newCenter, zoom: newZoom }),
+    });
+  },
+  { deep: true }
+);
+
+// Lade gespeicherten Zustand beim Start
 onMounted(async () => {
-  const stored = await Preferences.get({ key: "mapState" });
-  if (stored.value) {
+  const { value } = await Preferences.get({ key: 'mapState' });
+  if (value) {
     try {
-      const { zoom: z, center: c } = JSON.parse(stored.value);
-      zoom.value = z;
-      center.value = c;
+      const savedState = JSON.parse(value);
+      if (savedState.center && savedState.zoom) {
+        center.value = savedState.center;
+        zoom.value = savedState.zoom;
+      }
     } catch (e) {
-      console.warn('Fehler beim Parsen des gespeicherten Zustands:', e);
+      console.error('Fehler beim Parsen des gespeicherten Map-Status', e);
     }
   }
-});
-
-// Karte bei Änderung speichern
-watch([zoom, center], () => {
-  Preferences.set({
-    key: "mapState",
-    value: JSON.stringify({ zoom: zoom.value, center: center.value }),
-  });
 });
 
 // Geocoding mit Nominatim (OpenStreetMap)
@@ -95,20 +102,25 @@ async function requestLocationPermission() {
   }
 }
 
+
 async function locateUser() {
   showLoading.value = true;
   try {
     const hasPermission = await requestLocationPermission();
-    if (hasPermission) {
-      const pos = await Geolocation.getCurrentPosition();
-      userPosition.value = [pos.coords.latitude, pos.coords.longitude];
-      center.value = userPosition.value;
-      zoom.value = 16;
-    } else {
-      console.log('Standortberechtigung wurde nicht erteilt');
+    if (!hasPermission) {
+      console.log('Keine Berechtigung');
+      return;
     }
-  } catch (error) {
-    console.error("Fehler bei der Standortbestimmung:", error);
+    const pos = await Geolocation.getCurrentPosition();
+    userPosition.value = [pos.coords.latitude, pos.coords.longitude];
+    zoom.value = 16;
+    if (mapRef.value) {
+      mapRef.value.mapObject.setView(userPosition.value, zoom.value);
+    } else {
+      center.value = userPosition.value; // Fallback
+    }
+  } catch (e) {
+    console.error(e);
   } finally {
     showLoading.value = false;
   }
@@ -135,19 +147,20 @@ const attributionContent = '&copy; <a href="https://www.openstreetmap.org/copyri
       </button>
     </div>
 
-    <l-map
-      v-model:zoom="zoom"
-      v-model:center="center"
-      style="height: calc(100vh - 120px); width: 100%;"
-      :use-global-leaflet="false"
-    >
-      <l-tile-layer
-        url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-        :attribution="attributionContent"
-      />
+  <l-map
+    ref="mapRef"
+    v-model:zoom="zoom"
+    v-model:center="center"
+    :use-global-leaflet="false"
+    style="height: 100vh; width: 100%;"
+  >
+    <l-tile-layer
+      url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+      attribution='&copy; OpenStreetMap contributors'
+    />
       <l-marker v-if="userPosition" :lat-lng="userPosition" :icon="userIcon" />
       <l-marker v-if="searchPosition" :lat-lng="searchPosition" :icon="searchIcon" />
-    </l-map>
+  </l-map>
   </div>
 
   <ion-loading :is-open="showLoading" message="Lade..." />
